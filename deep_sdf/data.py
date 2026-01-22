@@ -53,7 +53,8 @@ def find_mesh_in_directory(shape_dir):
         raise NoMeshFileError()
     elif len(mesh_filenames) > 1:
         raise MultipleMeshFileError()
-    return mesh_filenames[0]
+    # 返回文件名，而不是完整路径，避免后续 os.path.join 时路径重复
+    return os.path.basename(mesh_filenames[0])
 
 
 def remove_nans(tensor):

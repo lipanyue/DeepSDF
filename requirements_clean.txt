@@ -1,0 +1,10 @@
+torch==1.1.0
+torchvision==0.3.0
+plyfile
+scikit-image
+trimesh
+numpy==1.19.2
+scipy
+matplotlib
+tqdm
+tensorboardX

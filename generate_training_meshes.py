@@ -37,7 +37,8 @@ def code_to_mesh(experiment_directory, checkpoint, keep_normalized=False):
 
     decoder.load_state_dict(saved_model_state["model_state_dict"])
 
-    decoder = decoder.module.cuda()
+    # Use CPU since no CUDA available
+    decoder = decoder.module.cpu()
 
     decoder.eval()
 

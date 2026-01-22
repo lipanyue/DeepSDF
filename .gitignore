@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Docker
+Dockerfile.*
+.dockerignore
+
+# System
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Data
+/data/
+data/
+*.h5
+*.npz
+*.pth
+
+# Build files
+build/
+dist/
+*.egg-info/
+
+# Environment
+.env
+venv/
+*.venv/
+
+# DeepSDF specific
+*.bin
+*.ply
+*.obj
+*.off
+*.xyz
+*.png
+*.jpg
+*.jpeg
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS
+*.bak
+*.swp
+*.swo
+
+# Compiled files
+*.so
+*.a
+*.o
+
+# Third-party
+third-party/cnpy/.git/
