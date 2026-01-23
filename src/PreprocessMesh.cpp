@@ -126,9 +126,11 @@ void SampleSDFNearSurface(
 
   for (int s = 0; s < (int)(num_rand_samples); s++) {
     xyz.push_back(Eigen::Vector3f(
-        rand_dist(generator) * bounding_cube_dim - bounding_cube_dim / 2,
-        rand_dist(generator) * bounding_cube_dim - bounding_cube_dim / 2,
-        rand_dist(generator) * bounding_cube_dim - bounding_cube_dim / 2));
+        // 调整采样范围，确保点在[-1, 1]范围内
+        // 使用0.95而非1.0，留有余地避免边界问题
+        (rand_dist(generator) * 1.9 - 0.95),
+        (rand_dist(generator) * 1.9 - 0.95),
+        (rand_dist(generator) * 1.9 - 0.95)));
   }
 
   // now compute sdf for each xyz sample
@@ -148,11 +150,14 @@ void SampleSDFNearSurface(
       float ray_vec_leng = ray_vec.norm();
 
       if (ind == 0) {
-        // if close to the surface, use point plane distance
-        if (ray_vec_leng < stdv)
-          sdf = fabs(normals[cl_ind].dot(ray_vec));
-        else
+        // if close to the surface, use accurate signed distance
+        if (ray_vec_leng < stdv) {
+          // 保留符号，不要取绝对值，确保正确的SDF梯度
+          sdf = normals[cl_ind].dot(ray_vec);
+        } else {
+          // 对于远处点，使用欧氏距离
           sdf = ray_vec_leng;
+        }
       }
 
       float d = normals[cl_ind].dot(ray_vec / ray_vec_leng);
@@ -163,13 +168,27 @@ void SampleSDFNearSurface(
     // all or nothing , else ignore the point
     if ((num_pos == 0) || (num_pos == num_votes)) {
       xyz_used.push_back(samp_vert);
-      if (num_pos <= (num_votes / 2)) {
-        sdf = -sdf;
+      // 更合理的SDF符号确定逻辑
+      // 如果点到表面的向量与法线点积为负，说明点在内部
+      if (num_pos == 0) {
+        // 所有法线都指向内部，点在内部
+        sdf = -fabs(sdf);
+      } else if (num_pos == num_votes) {
+        // 所有法线都指向外部，点在外部
+        sdf = fabs(sdf);
       }
       sdfs.push_back(sdf);
     }
   }
 
+  // 添加边界裁剪，确保所有点在[-1, 1]范围内
+  for (auto& point : xyz_used) {
+    // 使用std::clamp确保坐标在[-1.0, 1.0]范围内
+    point.x() = std::clamp(point.x(), -1.0f, 1.0f);
+    point.y() = std::clamp(point.y(), -1.0f, 1.0f);
+    point.z() = std::clamp(point.z(), -1.0f, 1.0f);
+  }
+  
   xyz = xyz_used;
 }
 
@@ -206,7 +225,7 @@ void writeSDFToNPZ(
     Eigen::Vector3f v = xyz[i];
     float s = sdfs[i];
 
-    if (s > 0) {
+    if (s < 0) {
       for (int j = 0; j < 3; j++)
         pos.push_back(v[j]);
       pos.push_back(s);
