@@ -29,6 +29,10 @@ data/
 *.npz
 *.pth
 
+# Allow ABC dataset
+!data/ABC/
+!data/ABC/**/*
+
 # Build files
 build/
 dist/
