@@ -1,5 +1,6 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -19,6 +20,45 @@
 #include "Utils.h"
 
 extern pangolin::GlSlProgram GetShaderProgram();
+
+// Simple OBJ saver for validation (no external dependency)
+void SaveSimpleObj(const std::string& filename, const pangolin::Geometry& geom) {
+    std::ofstream out(filename);
+    if (!out.is_open()) {
+        std::cerr << "❌ Cannot open " << filename << " for writing." << std::endl;
+        return;
+    }
+
+    // Write vertices: assume buffer named "geometry" with attribute "vertex"
+    auto it_vert_buf = geom.buffers.find("geometry");
+    if (it_vert_buf == geom.buffers.end()) {
+        std::cerr << "⚠️ No 'geometry' buffer found." << std::endl;
+        return;
+    }
+    auto it_vert_attr = it_vert_buf->second.attributes.find("vertex");
+    if (it_vert_attr == it_vert_buf->second.attributes.end()) {
+        std::cerr << "⚠️ No 'vertex' attribute in geometry buffer." << std::endl;
+        return;
+    }
+    pangolin::Image<float> verts = pangolin::get<pangolin::Image<float>>(it_vert_attr->second);
+    for (size_t i = 0; i < verts.h; ++i) {
+        out << "v " << verts(0, i) << " " << verts(1, i) << " " << verts(2, i) << "\n";
+    }
+
+    // Write faces: assume all objects have "vertex_indices" as uint32 triangle list
+    for (const auto& obj : geom.objects) {
+        auto it_faces = obj.second.attributes.find("vertex_indices");
+        if (it_faces != obj.second.attributes.end()) {
+            pangolin::Image<uint32_t> faces = pangolin::get<pangolin::Image<uint32_t>>(it_faces->second);
+            for (int i = 0; i < faces.h; ++i) {
+                // OBJ uses 1-based indexing
+                out << "f " << faces(0, i) + 1 << " " << faces(1, i) + 1 << " " << faces(2, i) + 1 << "\n";
+            }
+        }
+    }
+    out.close();
+    std::cout << "✅ Saved normalized mesh to: " << filename << std::endl;
+}
 
 void SampleFromSurface(
     pangolin::Geometry& geom,
@@ -110,30 +150,36 @@ void SampleSDFNearSurface(
   std::normal_distribution<float> perterb_norm(0, stdv);
   std::normal_distribution<float> perterb_second(0, sqrt(second_variance));
 
+  // 表面附近采样
   for (unsigned int i = 0; i < xyz_surf.size(); i++) {
     Eigen::Vector3f surface_p = xyz_surf[i];
     Eigen::Vector3f samp1 = surface_p;
     Eigen::Vector3f samp2 = surface_p;
 
     for (int j = 0; j < 3; j++) {
-      samp1[j] += perterb_norm(rng);
-      samp2[j] += perterb_second(rng);
+      // ✅ 修复：限制噪声范围，确保点在[-1, 1]内
+      float noise1 = perterb_norm(rng);
+      float noise2 = perterb_second(rng);
+      
+      // 应用噪声，但确保不超出[-0.95, 0.95]
+      samp1[j] = std::clamp(samp1[j] + noise1, -0.95f, 0.95f);
+      samp2[j] = std::clamp(samp2[j] + noise2, -0.95f, 0.95f);
     }
 
     xyz.push_back(samp1);
     xyz.push_back(samp2);
   }
 
+  // 均匀空间采样
   for (int s = 0; s < (int)(num_rand_samples); s++) {
+    // ✅ 修复：采样范围改为[-0.9, 0.9]，为噪声留出空间
     xyz.push_back(Eigen::Vector3f(
-        // 调整采样范围，确保点在[-1, 1]范围内
-        // 使用0.95而非1.0，留有余地避免边界问题
-        (rand_dist(generator) * 1.9 - 0.95),
-        (rand_dist(generator) * 1.9 - 0.95),
-        (rand_dist(generator) * 1.9 - 0.95)));
+        (rand_dist(generator) * 1.8 - 0.9),
+        (rand_dist(generator) * 1.8 - 0.9),
+        (rand_dist(generator) * 1.8 - 0.9)));
   }
 
-  // now compute sdf for each xyz sample
+  // 计算每个点的SDF
   for (int s = 0; s < (int)xyz.size(); s++) {
     Eigen::Vector3f samp_vert = xyz[s];
     std::vector<int> cl_indices(num_votes);
@@ -141,8 +187,9 @@ void SampleSDFNearSurface(
     kdTree.knnSearch(samp_vert.data(), num_votes, cl_indices.data(), cl_distances.data());
 
     int num_pos = 0;
-    float sdf;
+    float sdf = 0.0f;
 
+    // 使用最近点计算SDF
     for (int ind = 0; ind < num_votes; ind++) {
       uint32_t cl_ind = cl_indices[ind];
       Eigen::Vector3f cl_vert = vertices[cl_ind];
@@ -150,40 +197,35 @@ void SampleSDFNearSurface(
       float ray_vec_leng = ray_vec.norm();
 
       if (ind == 0) {
-        // if close to the surface, use accurate signed distance
-        if (ray_vec_leng < stdv) {
-          // 保留符号，不要取绝对值，确保正确的SDF梯度
-          sdf = normals[cl_ind].dot(ray_vec);
-        } else {
-          // 对于远处点，使用欧氏距离
-          sdf = ray_vec_leng;
-        }
+        // ✅ 修复：始终使用欧氏距离作为距离值
+        sdf = ray_vec_leng;
       }
 
-      float d = normals[cl_ind].dot(ray_vec / ray_vec_leng);
-      if (d > 0)
-        num_pos++;
+      // 统计法线方向（用于确定符号）
+      if (ray_vec_leng > 1e-6f) {
+        float d = normals[cl_ind].dot(ray_vec / ray_vec_leng);
+        if (d > 0)
+          num_pos++;
+      }
     }
 
     // all or nothing , else ignore the point
     if ((num_pos == 0) || (num_pos == num_votes)) {
       xyz_used.push_back(samp_vert);
-      // 更合理的SDF符号确定逻辑
-      // 如果点到表面的向量与法线点积为负，说明点在内部
+      
+      // ✅ 修复：根据法线投票确定符号
+      // 内部为负，外部为正
       if (num_pos == 0) {
-        // 所有法线都指向内部，点在内部
-        sdf = -fabs(sdf);
-      } else if (num_pos == num_votes) {
-        // 所有法线都指向外部，点在外部
-        sdf = fabs(sdf);
+        sdf = -std::abs(sdf);  // 内部点
+      } else {
+        sdf = std::abs(sdf);   // 外部点
       }
       sdfs.push_back(sdf);
     }
   }
 
-  // 添加边界裁剪，确保所有点在[-1, 1]范围内
+  // ✅ 修复：再次裁剪确保所有点在[-1, 1]范围内
   for (auto& point : xyz_used) {
-    // 使用std::clamp确保坐标在[-1.0, 1.0]范围内
     point.x() = std::clamp(point.x(), -1.0f, 1.0f);
     point.y() = std::clamp(point.y(), -1.0f, 1.0f);
     point.z() = std::clamp(point.z(), -1.0f, 1.0f);
@@ -362,7 +404,6 @@ int main(int argc, char** argv) {
       }
     }
 
-    //      const int total_num_indices = total_num_faces * 3;
     pangolin::ManagedImage<uint8_t> new_buffer(3 * sizeof(uint32_t), total_num_faces);
 
     pangolin::Image<uint32_t> new_ibo =
@@ -402,6 +443,15 @@ int main(int argc, char** argv) {
 
   float max_dist = BoundingCubeNormalization(geom, true);
 
+  // === Save normalized mesh as simple OBJ ===
+  std::string output_npz = npyFileName;
+  size_t last_dot = output_npz.find_last_of('.');
+  std::string normalized_mesh_path = (last_dot != std::string::npos)
+      ? output_npz.substr(0, last_dot) + "_norm.obj"
+      : output_npz + "_norm.obj";
+  SaveSimpleObj(normalized_mesh_path, geom);
+  // =========================================
+
   if (vis)
     pangolin::CreateWindowAndBind("Main", 640, 480);
   else
@@ -419,7 +469,6 @@ int main(int argc, char** argv) {
 
   // Define Projection and initial ModelView matrix
   pangolin::OpenGlRenderState s_cam(
-      //                pangolin::ProjectionMatrix(640,480,420,420,320,240,0.05,100),
       pangolin::ProjectionMatrixOrthographic(-max_dist, max_dist, -max_dist, max_dist, 0, 2.5),
       pangolin::ModelViewLookAt(0, 0, -1, 0, 0, 0, pangolin::AxisY));
   pangolin::OpenGlRenderState s_cam2(
@@ -439,11 +488,7 @@ int main(int argc, char** argv) {
                                 .SetHandler(&handler);
 
     while (!pangolin::ShouldQuit()) {
-      // Clear screen and activate view to render into
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-      //        glEnable(GL_CULL_FACE);
-      //        glCullFace(GL_FRONT);
-
       d_cam.Activate(s_cam);
 
       prog.Bind();
@@ -453,7 +498,6 @@ int main(int argc, char** argv) {
       pangolin::GlDraw(prog, gl_geom, nullptr);
       prog.Unbind();
 
-      // Swap frames and Process Events
       pangolin::FinishFrame();
     }
   }
@@ -480,10 +524,8 @@ int main(int argc, char** argv) {
   int wrong_obs = 0;
 
   for (unsigned int v = 0; v < views.size(); v++) {
-    // change camera location
     s_cam2.SetModelViewMatrix(
         pangolin::ModelViewLookAt(views[v][0], views[v][1], views[v][2], 0, 0, 0, pangolin::AxisY));
-    // Draw the scene to the framebuffer
     framebuffer.Bind();
     glViewport(0, 0, w, h);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -527,11 +569,9 @@ int main(int argc, char** argv) {
 
   if (wrong_ratio > rejection_criteria_obs || bad_tri_ratio > rejection_criteria_tri) {
     std::cout << "mesh rejected" << std::endl;
-    //    return 0;
   }
 
   std::vector<Eigen::Vector3f> vertices2;
-  //    std::vector<Eigen::Vector3f> vertices_all;
   std::vector<Eigen::Vector3f> normals2;
 
   for (unsigned int v = 0; v < point_verts.size(); v++) {
